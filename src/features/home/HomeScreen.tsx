@@ -4,6 +4,14 @@ import { ImageBannerAd } from "../../components/BannerAd";
 import { Card } from "../../components/ScreenLayout";
 import { EVENT, track, trackScreen } from "../../lib/analytics";
 import { findConflicts, searchDrugs, type Conflict, type Drug } from "../../lib/dur";
+import {
+  addRecent,
+  clearRecent,
+  isFavorite,
+  loadFavorites,
+  loadRecent,
+  toggleFavorite,
+} from "../../lib/pillbox";
 import { palette } from "../../theme";
 
 /** 한 번에 담을 수 있는 약. 이보다 많으면 약사와 상담할 일이에요. */
@@ -19,6 +27,8 @@ export function HomeScreen() {
   const [search, setSearch] = useState<Search>({ k: "idle" });
   const [picked, setPicked] = useState<Drug[]>([]);
   const [check, setCheck] = useState<Check>({ k: "idle" });
+  const [recent, setRecent] = useState<Drug[]>(() => loadRecent());
+  const [favorites, setFavorites] = useState<Drug[]>(() => loadFavorites());
 
   useEffect(() => {
     trackScreen("home");
@@ -48,6 +58,7 @@ export function HomeScreen() {
     setPicked([...picked, d]);
     setQ("");
     setCheck({ k: "idle" });
+    setRecent(addRecent(recent, d));
     track(EVENT.drugAdded, { name: d.name });
   };
 
@@ -55,6 +66,16 @@ export function HomeScreen() {
     setPicked(picked.filter((p) => p.seq !== seq));
     setCheck({ k: "idle" });
   };
+
+  const favorite = (d: Drug) => setFavorites(toggleFavorite(favorites, d));
+
+  const clearHistory = () => {
+    clearRecent();
+    setRecent([]);
+  };
+
+  // 즐겨찾기에 이미 있는 약은 최근 목록에서 또 안 보여줘요 — 화면이 복잡해지니까요.
+  const visibleRecent = recent.filter((d) => !isFavorite(favorites, d.seq));
 
   const runCheck = () => {
     setCheck({ k: "loading" });
@@ -103,6 +124,58 @@ export function HomeScreen() {
         }}
       />
 
+      {/* -------------------------------------------- 내 약 · 최근 담은 약 */}
+      {q.trim() === "" && (favorites.length > 0 || visibleRecent.length > 0) && (
+        <div style={{ marginTop: 14 }}>
+          {favorites.length > 0 && (
+            <div style={{ marginBottom: visibleRecent.length > 0 ? 16 : 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: palette.sub, marginBottom: 8 }}>
+                내 약
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {favorites.map((d) => (
+                  <Chip key={d.seq} drug={d} onClick={() => add(d)} />
+                ))}
+              </div>
+            </div>
+          )}
+          {visibleRecent.length > 0 && (
+            <div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginBottom: 8,
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 700, color: palette.sub }}>
+                  최근 담은 약
+                </div>
+                <button
+                  onClick={clearHistory}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: palette.sub,
+                    fontSize: 13,
+                    textDecoration: "underline",
+                    padding: "8px 0",
+                  }}
+                >
+                  기록 지우기
+                </button>
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {visibleRecent.map((d) => (
+                  <Chip key={d.seq} drug={d} onClick={() => add(d)} />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {search.k === "loading" && (
         <p style={{ fontSize: 14, color: palette.sub, marginTop: 10 }}>찾는 중…</p>
       )}
@@ -115,25 +188,27 @@ export function HomeScreen() {
       {results.length > 0 && (
         <Card style={{ marginTop: 8, padding: 4 }}>
           {results.map((d) => (
-            <button
-              key={d.seq}
-              onClick={() => add(d)}
-              style={{
-                display: "block",
-                width: "100%",
-                textAlign: "left",
-                border: "none",
-                background: "transparent",
-                borderRadius: 10,
-                padding: "12px",
-              }}
-            >
-              <div style={{ fontSize: 16, fontWeight: 600, color: palette.ink }}>{d.name}</div>
-              <div style={{ fontSize: 13, color: palette.sub, marginTop: 2 }}>
-                {d.entp}
-                {d.etcOtc !== "" && ` · ${d.etcOtc}`}
-              </div>
-            </button>
+            <div key={d.seq} style={{ display: "flex", alignItems: "center" }}>
+              <button
+                onClick={() => add(d)}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  textAlign: "left",
+                  border: "none",
+                  background: "transparent",
+                  borderRadius: 10,
+                  padding: "12px",
+                }}
+              >
+                <div style={{ fontSize: 16, fontWeight: 600, color: palette.ink }}>{d.name}</div>
+                <div style={{ fontSize: 13, color: palette.sub, marginTop: 2 }}>
+                  {d.entp}
+                  {d.etcOtc !== "" && ` · ${d.etcOtc}`}
+                </div>
+              </button>
+              <StarButton active={isFavorite(favorites, d.seq)} onClick={() => favorite(d)} />
+            </div>
           ))}
         </Card>
       )}
@@ -152,22 +227,32 @@ export function HomeScreen() {
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
             {picked.map((d) => (
-              <button
+              <div
                 key={d.seq}
-                onClick={() => remove(d.seq)}
                 style={{
-                  border: "none",
+                  display: "flex",
+                  alignItems: "center",
                   borderRadius: 999,
-                  padding: "10px 14px",
-                  fontSize: 15,
-                  fontWeight: 600,
-                  color: palette.ink,
                   background: palette.white,
                   boxShadow: "0 1px 6px rgba(26,22,30,0.08)",
                 }}
               >
-                {d.name} <span style={{ color: palette.sub, marginLeft: 4 }}>✕</span>
-              </button>
+                <StarButton active={isFavorite(favorites, d.seq)} onClick={() => favorite(d)} />
+                <button
+                  onClick={() => remove(d.seq)}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    borderRadius: 999,
+                    padding: "10px 14px 10px 2px",
+                    fontSize: 15,
+                    fontWeight: 600,
+                    color: palette.ink,
+                  }}
+                >
+                  {d.name} <span style={{ color: palette.sub, marginLeft: 4 }}>✕</span>
+                </button>
+              </div>
             ))}
           </div>
 
@@ -279,5 +364,52 @@ function Note({ text }: { text: string }) {
     <Card style={{ textAlign: "center", padding: 24 }}>
       <p style={{ fontSize: 15, color: palette.sub, margin: 0, lineHeight: 1.6 }}>{text}</p>
     </Card>
+  );
+}
+
+/** 최근/즐겨찾기 칩. 이름이 길어서 괄호 앞부분만 잘라 보여줘요(전체 이름은 담긴 뒤에 보여요). */
+function Chip({ drug, onClick }: { drug: Drug; onClick: () => void }) {
+  const label = drug.name.split("(")[0].trim();
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        minHeight: 44,
+        maxWidth: 220,
+        padding: "0 16px",
+        border: "none",
+        borderRadius: 999,
+        background: palette.white,
+        color: palette.ink,
+        fontSize: 15,
+        fontWeight: 600,
+        boxShadow: "0 1px 6px rgba(26,22,30,0.08)",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+function StarButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-label={active ? "즐겨찾기 해제" : "즐겨찾기 추가"}
+      style={{
+        width: 44,
+        height: 44,
+        flexShrink: 0,
+        border: "none",
+        background: "transparent",
+        fontSize: 20,
+        color: active ? "#F5A623" : palette.line,
+      }}
+    >
+      {active ? "★" : "☆"}
+    </button>
   );
 }
