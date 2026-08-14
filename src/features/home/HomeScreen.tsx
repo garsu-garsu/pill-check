@@ -7,10 +7,15 @@ import { findConflicts, searchDrugs, type Conflict, type Drug } from "../../lib/
 import {
   addRecent,
   clearRecent,
+  findCombo,
   isFavorite,
+  loadCombos,
   loadFavorites,
   loadRecent,
+  removeCombo,
+  saveCombo,
   toggleFavorite,
+  type Combo,
 } from "../../lib/pillbox";
 import { palette } from "../../theme";
 
@@ -29,6 +34,7 @@ export function HomeScreen() {
   const [check, setCheck] = useState<Check>({ k: "idle" });
   const [recent, setRecent] = useState<Drug[]>(() => loadRecent());
   const [favorites, setFavorites] = useState<Drug[]>(() => loadFavorites());
+  const [combos, setCombos] = useState<Combo[]>(() => loadCombos());
 
   useEffect(() => {
     trackScreen("home");
@@ -77,6 +83,14 @@ export function HomeScreen() {
   // 즐겨찾기에 이미 있는 약은 최근 목록에서 또 안 보여줘요 — 화면이 복잡해지니까요.
   const visibleRecent = recent.filter((d) => !isFavorite(favorites, d.seq));
 
+  // 담은 약과 구성이 같은 조합이 이미 저장돼 있으면(순서 달라도) "저장됨"으로 표시해요.
+  const currentCombo = findCombo(combos, picked);
+
+  const applyCombo = (c: Combo) => {
+    setPicked(c.drugs);
+    setCheck({ k: "idle" });
+  };
+
   const runCheck = () => {
     setCheck({ k: "loading" });
     findConflicts(picked)
@@ -124,9 +138,67 @@ export function HomeScreen() {
         }}
       />
 
-      {/* -------------------------------------------- 내 약 · 최근 담은 약 */}
-      {q.trim() === "" && (favorites.length > 0 || visibleRecent.length > 0) && (
+      {/* -------------------------------------------- 저장한 조합 · 내 약 · 최근 담은 약 */}
+      {q.trim() === "" && (combos.length > 0 || favorites.length > 0 || visibleRecent.length > 0) && (
         <div style={{ marginTop: 14 }}>
+          {combos.length > 0 && (
+            <div style={{ marginBottom: favorites.length > 0 || visibleRecent.length > 0 ? 16 : 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: palette.sub, marginBottom: 8 }}>
+                저장한 조합
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {combos.map((c) => (
+                  <div
+                    key={c.key}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      borderRadius: 999,
+                      background: palette.white,
+                      boxShadow: "0 1px 6px rgba(26,22,30,0.08)",
+                    }}
+                  >
+                    <button
+                      onClick={() => applyCombo(c)}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        minHeight: 44,
+                        maxWidth: 220,
+                        border: "none",
+                        background: "transparent",
+                        borderRadius: 999,
+                        padding: "0 4px 0 16px",
+                        fontSize: 15,
+                        fontWeight: 600,
+                        color: palette.ink,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {c.label}
+                    </button>
+                    <button
+                      onClick={() => setCombos(removeCombo(combos, c.key))}
+                      aria-label="조합 지우기"
+                      style={{
+                        width: 44,
+                        height: 44,
+                        flexShrink: 0,
+                        border: "none",
+                        background: "transparent",
+                        fontSize: 16,
+                        color: palette.sub,
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {favorites.length > 0 && (
             <div style={{ marginBottom: visibleRecent.length > 0 ? 16 : 0 }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: palette.sub, marginBottom: 8 }}>
@@ -255,6 +327,27 @@ export function HomeScreen() {
               </div>
             ))}
           </div>
+
+          {picked.length >= 2 && (
+            <button
+              onClick={() => setCombos(saveCombo(combos, picked))}
+              disabled={currentCombo != null}
+              style={{
+                width: "100%",
+                marginTop: 10,
+                minHeight: 44,
+                border: `1.5px solid ${palette.primary}`,
+                borderRadius: 12,
+                padding: "10px 0",
+                fontSize: 15,
+                fontWeight: 700,
+                color: currentCombo != null ? palette.sub : palette.primary,
+                background: "transparent",
+              }}
+            >
+              {currentCombo != null ? "저장됨" : "이 조합 저장"}
+            </button>
+          )}
 
           <button
             onClick={runCheck}
