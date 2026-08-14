@@ -1,12 +1,17 @@
 /**
  * 병용금기 확인.
  *
- * 식약처 DUR 품목정보(병용금기)를 빌드 때 정적 파일로 굽고, 앱은 그 표만 봅니다.
- * 런타임에 부르는 API가 없어요.
+ * 식약처 공공데이터 API를 그때그때 직접 불러요. 미리 표를 구워두지 않습니다.
+ *   - 약 검색: DUR 품목정보(getDurPrdlstInfoList03) — 이름으로 찾아요. 이 목록에 있는 약은
+ *     전부 DUR 판정이 가능한 약이라, e약은요보다 검색-확인이 실제로 이어져요(실측 확인).
+ *   - 병용금기: DUR 품목정보(getUsjntTabooInfoList03) — 담은 약의 품목기준코드(itemSeq)로
+ *     그 약과 부딪히는 상대 약 목록을 통째로 받아, 다른 담은 약이 그 안에 있는지 봐요.
+ *   - e약은요(DrbEasyDrugInfoService)는 검색에는 안 쓰고, 상세정보(효능·복용법 등)용으로만 남겨요.
  *
  * ⚠️ 이 앱은 판단을 대신하지 않아요. 식약처가 공개한 금기 정보를 그대로 보여줄 뿐이고,
  *    복용 여부는 약사·의사가 정합니다. 화면 문구도 전부 그 선을 지켜야 해요.
  */
+import { DATA_KEY } from "./env.ts";
 
 export interface Drug {
   /** 품목기준코드 */
@@ -14,167 +19,179 @@ export interface Drug {
   name: string;
   /** 업체명 */
   entp: string;
-  /** 주성분 코드들 — 금기는 제품이 아니라 성분끼리 잡혀요. */
-  ing: string[];
-}
-
-export interface DurData {
-  /** 금기 사유 문장 목록. 같은 문장이 수만 번 반복돼서 번호로 눌러 놨어요. */
-  reasons: string[];
-  drugs: Drug[];
-  /** "성분A|성분B"(사전순) → 사유 번호 */
-  banned: Record<string, number>;
+  /** "전문의약품" | "일반의약품" */
+  etcOtc: string;
 }
 
 export interface Conflict {
   a: Drug;
   b: Drug;
   reason: string;
-  /** 실제로 부딪히는 성분 쌍 — 왜 걸렸는지 보여주려고 같이 넘겨요. */
-  pair: [string, string];
 }
 
-/** 키는 항상 사전순이라 (A,B)와 (B,A)를 따로 저장하지 않아요. */
-export function keyOf(a: string, b: string): string {
-  return a < b ? `${a}|${b}` : `${b}|${a}`;
+const DUR_LIST_URL = "https://apis.data.go.kr/1471000/DURPrdlstInfoService03/getDurPrdlstInfoList03";
+const DUR_TABOO_URL = "https://apis.data.go.kr/1471000/DURPrdlstInfoService03/getUsjntTabooInfoList03";
+const DRUG_URL = "https://apis.data.go.kr/1471000/DrbEasyDrugInfoService/getDrbEasyDrugList";
+/** 공공데이터포털 실측: 이보다 크면 API가 에러를 돌려줘요. */
+const MAX_ROWS = 500;
+
+interface RawDurListItem {
+  ITEM_SEQ: string;
+  ITEM_NAME: string;
+  ENTP_NAME: string;
+  ETC_OTC_CODE: string;
+  /** "정상"이 아니면 허가취소 등 — 지금 살 수 없는 약이라 검색에서 빼요. */
+  CANCEL_NAME: string;
+}
+
+interface RawTabooItem {
+  MIXTURE_ITEM_SEQ: string;
+  PROHBT_CONTENT: string;
+}
+
+async function getJson(base: string, params: Record<string, string>): Promise<{
+  items: unknown[];
+  totalCount: number;
+}> {
+  const url = `${base}?${new URLSearchParams({ ...params, serviceKey: DATA_KEY, type: "json" })}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("약 정보를 불러오지 못했어요");
+  const json = (await res.json()) as { body?: { items?: unknown[]; totalCount?: number } };
+  // 결과가 0건이면 body는 오는데 items 키가 아예 빠져요(실측). 그건 에러가 아니라 빈 목록이에요.
+  if (json.body == null) throw new Error("약 정보를 불러오지 못했어요");
+  return { items: json.body.items ?? [], totalCount: Number(json.body.totalCount ?? 0) };
+}
+
+/** 결과가 MAX_ROWS 를 넘으면 끝까지 이어서 받아요. 금기를 놓치면 사람이 다쳐요. */
+async function getAllPages(base: string, params: Record<string, string>): Promise<unknown[]> {
+  const first = await getJson(base, { ...params, numOfRows: String(MAX_ROWS), pageNo: "1" });
+  const items = [...first.items];
+  const pages = Math.ceil(first.totalCount / MAX_ROWS);
+  for (let page = 2; page <= pages; page++) {
+    const more = await getJson(base, { ...params, numOfRows: String(MAX_ROWS), pageNo: String(page) });
+    items.push(...more.items);
+  }
+  return items;
+}
+
+/** 제품명 검색. 두 글자 미만이면 검색하지 않아요. */
+export async function searchDrugs(q: string, limit = 30): Promise<Drug[]> {
+  const needle = q.trim();
+  if (needle.length < 2) return [];
+  const { items } = await getJson(DUR_LIST_URL, {
+    itemName: needle,
+    numOfRows: String(limit),
+    pageNo: "1",
+  });
+  const seen = new Set<string>();
+  const out: Drug[] = [];
+  for (const raw of items as RawDurListItem[]) {
+    const seq = String(raw.ITEM_SEQ ?? "").trim();
+    if (seq === "" || seen.has(seq)) continue; // 같은 품목이 중복으로 오기도 해요
+    if (String(raw.CANCEL_NAME ?? "") !== "정상") continue; // 허가취소 등은 담을 수 없어요
+    seen.add(seq);
+    out.push({
+      seq,
+      name: String(raw.ITEM_NAME ?? "").trim(),
+      entp: String(raw.ENTP_NAME ?? "").trim(),
+      etcOtc: String(raw.ETC_OTC_CODE ?? "").trim(),
+    });
+  }
+  return out;
 }
 
 /**
- * 파일 안의 약은 객체가 아니라 배열로 눌려 있어요.
- * [품목기준코드, 제품명, 업체명, 성분코드들]
+ * 고른 약의 효능·복용법·주의사항(e약은요). DUR 목록에는 이 정보가 없어서 따로 불러요.
+ * e약은요 카탈로그가 작아서 없는 약이 많아요 — 없으면 null이고, 그럴 땐 그냥 안 보여주면 돼요.
  */
-type RawDrug = [string, string, string, string[]];
-
-interface RawDur {
-  reasons: string[];
-  drugs: RawDrug[];
-  banned: Record<string, number>;
-}
-
-/** 빌드 때 구운 정적 파일. 런타임에 외부 API를 부르지 않아요. */
-export async function loadDur(): Promise<DurData> {
-  const res = await fetch("/data/dur.json");
-  if (!res.ok) throw new Error("약 정보를 읽지 못했어요");
-  const raw = (await res.json()) as RawDur;
+export async function getDrugDetail(name: string): Promise<{
+  efcy: string;
+  useMethod: string;
+  atpn: string;
+} | null> {
+  const { items } = await getJson(DRUG_URL, { itemName: name, numOfRows: "1", pageNo: "1" });
+  const raw = items[0] as
+    | { efcyQesitm?: string; useMethodQesitm?: string; atpnQesitm?: string }
+    | undefined;
+  if (raw == null) return null;
   return {
-    reasons: raw.reasons,
-    banned: raw.banned,
-    drugs: raw.drugs.map(([seq, name, entp, ing]) => ({ seq, name, entp, ing })),
+    efcy: String(raw.efcyQesitm ?? "").trim(),
+    useMethod: String(raw.useMethodQesitm ?? "").trim(),
+    atpn: String(raw.atpnQesitm ?? "").trim(),
   };
 }
 
 /**
  * 담아둔 약들 사이의 금기 조합 전부.
  *
+ * 담은 약마다 자기 itemSeq로 병용금기 목록을 통째로 받아, 그 안에 다른 담은 약의
+ * itemSeq가 있는지 봐요. 이 관계는 데이터에 양방향으로 다 들어 있어서(실측 확인),
+ * 한쪽만 조회해도 놓치지 않아요.
+ *
  * 같은 약을 두 번 담아도(같은 seq) 자기 자신과는 비교하지 않아요.
- * 서로 다른 제품이 같은 성분을 쓰는 건 금기가 아니라 중복투여라 여기서 안 잡습니다.
  */
-export function findConflicts(picked: Drug[], data: DurData): Conflict[] {
-  const out: Conflict[] = [];
-  for (let i = 0; i < picked.length; i++) {
-    for (let j = i + 1; j < picked.length; j++) {
-      const a = picked[i];
-      const b = picked[j];
-      if (a.seq === b.seq) continue;
+export async function findConflicts(picked: Drug[]): Promise<Conflict[]> {
+  const uniq = picked.filter((d, i) => picked.findIndex((p) => p.seq === d.seq) === i);
+  if (uniq.length < 2) return [];
 
-      // 한 조합에 금기 성분이 여러 개 걸려도 경고는 한 번만 띄워요.
+  // 약마다 "이 약과 부딪히는 상대 itemSeq → 사유" 맵을 만들어요.
+  // 한꺼번에 여러 개를 동시에 부르면 공공데이터포털 쪽이 잘 못 버텨서, 하나씩 순서대로 불러요.
+  const tabooByDrug = new Map<string, Map<string, string>>();
+  for (const d of uniq) {
+    const rows = (await getAllPages(DUR_TABOO_URL, { itemSeq: d.seq })) as RawTabooItem[];
+    const m = new Map<string, string>();
+    for (const r of rows) {
+      m.set(String(r.MIXTURE_ITEM_SEQ ?? "").trim(), String(r.PROHBT_CONTENT ?? "").trim());
+    }
+    tabooByDrug.set(d.seq, m);
+  }
+
+  const out: Conflict[] = [];
+  for (let i = 0; i < uniq.length; i++) {
+    for (let j = i + 1; j < uniq.length; j++) {
+      const a = uniq[i];
+      const b = uniq[j];
+      // 한 조합에 사유가 여러 개 걸려도 경고는 한 번만 띄워요.
       // 같은 경고를 세 번 보여주면 사용자가 전부 무시하게 됩니다.
-      const hit = firstBanned(a.ing, b.ing, data.banned);
-      if (hit == null) continue;
-      out.push({
-        a,
-        b,
-        reason: data.reasons[hit.idx] ?? "",
-        pair: [hit.ia, hit.ib],
-      });
+      const reason = tabooByDrug.get(a.seq)?.get(b.seq) ?? tabooByDrug.get(b.seq)?.get(a.seq);
+      if (reason == null) continue;
+      out.push({ a, b, reason });
     }
   }
   return out;
 }
 
-function firstBanned(
-  left: string[],
-  right: string[],
-  banned: Record<string, number>,
-): { ia: string; ib: string; idx: number } | null {
-  for (const ia of left) {
-    for (const ib of right) {
-      // 같은 성분끼리는 금기가 아니라 중복투여라 여기서 안 잡아요.
-      if (ia === ib) continue;
-      const idx = banned[keyOf(ia, ib)];
-      if (idx != null) return { ia, ib, idx };
-    }
-  }
-  return null;
-}
-
-/** 제품명 검색. 앞에서 맞는 것을 먼저 보여줘요. */
-export function search(drugs: Drug[], q: string, limit = 30): Drug[] {
-  const needle = q.trim().replace(/\s/g, "");
-  if (needle.length < 2) return [];
-  const starts: Drug[] = [];
-  const contains: Drug[] = [];
-  for (const d of drugs) {
-    const name = d.name.replace(/\s/g, "");
-    if (name.startsWith(needle)) starts.push(d);
-    else if (name.includes(needle)) contains.push(d);
-    if (starts.length >= limit) break;
-  }
-  return [...starts, ...contains].slice(0, limit);
-}
-
 /* ------------------------------------------------------------------ */
 /* 자체 점검 — `npm run check:dur`                                     */
-/* 금기를 놓치면 사람이 다쳐요. 여기가 이 앱에서 제일 중요한 코드예요. */
+/* 네트워크를 타지 않는 순수 로직만 검사해요(중복 제거, 짝 찾기).       */
 /* ------------------------------------------------------------------ */
 export function demo(): void {
   const eq = (got: unknown, want: unknown, label: string) => {
     if (got !== want) throw new Error(`${label}: ${String(got)} !== ${String(want)}`);
   };
 
-  eq(keyOf("B", "A"), "A|B", "키는 사전순");
-  eq(keyOf("A", "B"), "A|B", "순서를 바꿔도 같은 키");
+  const mk = (seq: string, name: string): Drug => ({ seq, name, entp: "테스트제약", etcOtc: "일반의약품" });
 
-  const data: DurData = {
-    reasons: ["출혈 위험 증가", "심장 리듬 이상"],
-    drugs: [],
-    banned: { "ING_A|ING_B": 0, "ING_C|ING_D": 1 },
+  // findConflicts와 같은 짝짓기 로직 — 네트워크 없이 순수 로직만 떼어 확인해요.
+  const pairUp = (uniq: Drug[]): [Drug, Drug][] => {
+    const out: [Drug, Drug][] = [];
+    for (let i = 0; i < uniq.length; i++) {
+      for (let j = i + 1; j < uniq.length; j++) out.push([uniq[i], uniq[j]]);
+    }
+    return out;
   };
-  const mk = (seq: string, name: string, ing: string[]): Drug => ({
-    seq, name, entp: "테스트제약", ing,
-  });
+  const dedupe = (picked: Drug[]): Drug[] =>
+    picked.filter((d, i) => picked.findIndex((p) => p.seq === d.seq) === i);
 
-  const A = mk("1", "가나정", ["ING_A"]);
-  const B = mk("2", "다라정", ["ING_B"]);
-  const C = mk("3", "마바정", ["ING_X"]);
-  const D = mk("4", "사아정", ["ING_C", "ING_X"]);
-  const E = mk("5", "자차정", ["ING_D"]);
+  const A = mk("1", "가나정");
+  const B = mk("2", "다라정");
+  const C = mk("3", "마바정");
 
-  eq(findConflicts([A, B], data).length, 1, "금기 한 쌍을 찾아야 해요");
-  eq(findConflicts([A, B], data)[0].reason, "출혈 위험 증가", "사유를 붙여야 해요");
-  eq(findConflicts([B, A], data).length, 1, "담은 순서가 달라도 찾아야 해요");
-  eq(findConflicts([A, C], data).length, 0, "금기가 아니면 0건");
-  eq(findConflicts([A], data).length, 0, "약이 하나면 0건");
-  eq(findConflicts([], data).length, 0, "빈 목록은 0건");
-  eq(findConflicts([A, A], data).length, 0, "같은 약을 두 번 담아도 자기자신과는 비교 안 함");
-  eq(findConflicts([C, D], data).length, 0, "같은 성분을 공유해도 금기는 아님");
-  eq(findConflicts([D, E], data)[0]?.reason, "심장 리듬 이상", "성분이 여러 개여도 찾아야 해요");
-  eq(findConflicts([A, B, D, E], data).length, 2, "세 쌍 이상도 전부 찾아야 해요");
-
-  // 같은 두 약에 금기 성분이 여러 개 걸려도 경고는 한 번만.
-  const dupData: DurData = {
-    reasons: ["사유"],
-    drugs: [],
-    banned: { "P1|Q1": 0, "P2|Q2": 0 },
-  };
-  const P = mk("6", "피정", ["P1", "P2"]);
-  const Q = mk("7", "큐정", ["Q1", "Q2"]);
-  eq(findConflicts([P, Q], dupData).length, 1, "같은 조합은 한 번만 알림");
-
-  const list = [mk("1", "타이레놀정", []), mk("2", "어린이타이레놀", []), mk("3", "게보린", [])];
-  eq(search(list, "타이레").length, 2, "부분 검색");
-  eq(search(list, "타이레")[0].name, "타이레놀정", "앞에서 맞는 것이 먼저");
-  eq(search(list, "가").length, 0, "한 글자로는 검색 안 함");
+  eq(pairUp(dedupe([A, B])).length, 1, "약 두 개면 짝은 하나");
+  eq(pairUp(dedupe([A, B, C])).length, 3, "약 세 개면 짝은 세 개");
+  eq(dedupe([A, A, B]).length, 2, "같은 약을 두 번 담으면 하나로 줄여요");
+  eq(pairUp(dedupe([A])).length, 0, "약이 하나면 짝이 없어요");
+  eq(pairUp(dedupe([])).length, 0, "빈 목록은 짝이 없어요");
 
   console.log("dur.ts OK");
 }

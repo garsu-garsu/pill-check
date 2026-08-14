@@ -3,62 +3,68 @@ import { useEffect, useMemo, useState } from "react";
 import { ImageBannerAd } from "../../components/BannerAd";
 import { Card } from "../../components/ScreenLayout";
 import { EVENT, track, trackScreen } from "../../lib/analytics";
-import {
-  findConflicts,
-  loadDur,
-  search,
-  type Drug,
-  type DurData,
-} from "../../lib/dur";
+import { findConflicts, searchDrugs, type Conflict, type Drug } from "../../lib/dur";
 import { palette } from "../../theme";
 
 /** 한 번에 담을 수 있는 약. 이보다 많으면 약사와 상담할 일이에요. */
 const MAX = 10;
+/** 입력할 때마다 API를 부르면 너무 잦으니, 타이핑이 멈추고 이만큼 지나면 검색해요. */
+const SEARCH_DEBOUNCE_MS = 400;
 
-type Load = { k: "loading" } | { k: "ready"; data: DurData } | { k: "error" };
+type Search = { k: "idle" } | { k: "loading" } | { k: "done"; results: Drug[] } | { k: "error" };
+type Check = { k: "idle" } | { k: "loading" } | { k: "done"; conflicts: Conflict[] } | { k: "error" };
 
 export function HomeScreen() {
-  const [load, setLoad] = useState<Load>({ k: "loading" });
   const [q, setQ] = useState("");
+  const [search, setSearch] = useState<Search>({ k: "idle" });
   const [picked, setPicked] = useState<Drug[]>([]);
-  const [checked, setChecked] = useState(false);
+  const [check, setCheck] = useState<Check>({ k: "idle" });
 
   useEffect(() => {
     trackScreen("home");
-    loadDur()
-      .then((data) => setLoad({ k: "ready", data }))
-      .catch(() => setLoad({ k: "error" }));
   }, []);
 
-  const results = useMemo(
-    () => (load.k === "ready" ? search(load.data.drugs, q) : []),
-    [load, q],
-  );
+  // 타이핑이 멈추면 검색해요.
+  useEffect(() => {
+    const needle = q.trim();
+    if (needle.length < 2) {
+      setSearch({ k: "idle" });
+      return;
+    }
+    setSearch({ k: "loading" });
+    const timer = setTimeout(() => {
+      searchDrugs(needle)
+        .then((results) => setSearch({ k: "done", results }))
+        .catch(() => setSearch({ k: "error" }));
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [q]);
 
-  const conflicts = useMemo(
-    () => (load.k === "ready" && checked ? findConflicts(picked, load.data) : []),
-    [load, picked, checked],
-  );
+  const results = useMemo(() => (search.k === "done" ? search.results : []), [search]);
 
   const add = (d: Drug) => {
     if (picked.length >= MAX) return;
     if (picked.some((p) => p.seq === d.seq)) return;
     setPicked([...picked, d]);
     setQ("");
-    setChecked(false);
+    setCheck({ k: "idle" });
     track(EVENT.drugAdded, { name: d.name });
   };
 
   const remove = (seq: string) => {
     setPicked(picked.filter((p) => p.seq !== seq));
-    setChecked(false);
+    setCheck({ k: "idle" });
   };
 
-  const check = () => {
-    setChecked(true);
-    const found = load.k === "ready" ? findConflicts(picked, load.data) : [];
-    track(EVENT.checked, { count: picked.length });
-    if (found.length > 0) track(EVENT.conflictFound, { count: found.length });
+  const runCheck = () => {
+    setCheck({ k: "loading" });
+    findConflicts(picked)
+      .then((found) => {
+        setCheck({ k: "done", conflicts: found });
+        track(EVENT.checked, { count: picked.length });
+        if (found.length > 0) track(EVENT.conflictFound, { count: found.length });
+      })
+      .catch(() => setCheck({ k: "error" }));
   };
 
   return (
@@ -79,108 +85,120 @@ export function HomeScreen() {
         지금 드시는 약을 담으면, 식약처가 <b>함께 먹지 말라고 정해 둔 조합</b>이 있는지 찾아봐요.
       </p>
 
-      {load.k === "loading" && <Note text="약 정보를 불러오는 중이에요…" />}
-      {load.k === "error" && <Note text="약 정보를 불러오지 못했어요. 잠시 뒤 다시 열어주세요." />}
+      {/* -------------------------------------------------- 검색 */}
+      <input
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="약 이름 두 글자 이상 (예: 타이레놀)"
+        style={{
+          width: "100%",
+          boxSizing: "border-box",
+          border: `1.5px solid ${palette.line}`,
+          borderRadius: 12,
+          padding: "16px 14px",
+          fontSize: 17,
+          color: palette.ink,
+          background: palette.white,
+          outline: "none",
+        }}
+      />
 
-      {load.k === "ready" && (
-        <>
-          {/* -------------------------------------------------- 검색 */}
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="약 이름 두 글자 이상 (예: 아스피)"
-            style={{
-              width: "100%",
-              boxSizing: "border-box",
-              border: `1.5px solid ${palette.line}`,
-              borderRadius: 12,
-              padding: "16px 14px",
-              fontSize: 17,
-              color: palette.ink,
-              background: palette.white,
-              outline: "none",
-            }}
-          />
+      {search.k === "loading" && (
+        <p style={{ fontSize: 14, color: palette.sub, marginTop: 10 }}>찾는 중…</p>
+      )}
+      {search.k === "error" && (
+        <p style={{ fontSize: 14, color: palette.sub, marginTop: 10 }}>
+          약을 찾지 못했어요. 잠시 뒤 다시 시도해주세요.
+        </p>
+      )}
 
-          {results.length > 0 && (
-            <Card style={{ marginTop: 8, padding: 4 }}>
-              {results.map((d) => (
-                <button
-                  key={d.seq}
-                  onClick={() => add(d)}
-                  style={{
-                    display: "block",
-                    width: "100%",
-                    textAlign: "left",
-                    border: "none",
-                    background: "transparent",
-                    borderRadius: 10,
-                    padding: "12px",
-                  }}
-                >
-                  <div style={{ fontSize: 16, fontWeight: 600, color: palette.ink }}>{d.name}</div>
-                  <div style={{ fontSize: 13, color: palette.sub, marginTop: 2 }}>{d.entp}</div>
-                </button>
-              ))}
-            </Card>
-          )}
-
-          {q.trim().length >= 2 && results.length === 0 && (
-            <p style={{ fontSize: 14, color: palette.sub, marginTop: 10 }}>
-              찾는 약이 없어요. 상자에 적힌 이름 그대로 넣어보세요.
-            </p>
-          )}
-
-          {/* ---------------------------------------------- 담은 약 */}
-          {picked.length > 0 && (
-            <div style={{ marginTop: 20 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: palette.ink, marginBottom: 8 }}>
-                담은 약 {picked.length}개
+      {results.length > 0 && (
+        <Card style={{ marginTop: 8, padding: 4 }}>
+          {results.map((d) => (
+            <button
+              key={d.seq}
+              onClick={() => add(d)}
+              style={{
+                display: "block",
+                width: "100%",
+                textAlign: "left",
+                border: "none",
+                background: "transparent",
+                borderRadius: 10,
+                padding: "12px",
+              }}
+            >
+              <div style={{ fontSize: 16, fontWeight: 600, color: palette.ink }}>{d.name}</div>
+              <div style={{ fontSize: 13, color: palette.sub, marginTop: 2 }}>
+                {d.entp}
+                {d.etcOtc !== "" && ` · ${d.etcOtc}`}
               </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {picked.map((d) => (
-                  <button
-                    key={d.seq}
-                    onClick={() => remove(d.seq)}
-                    style={{
-                      border: "none",
-                      borderRadius: 999,
-                      padding: "10px 14px",
-                      fontSize: 15,
-                      fontWeight: 600,
-                      color: palette.ink,
-                      background: palette.white,
-                      boxShadow: "0 1px 6px rgba(26,22,30,0.08)",
-                    }}
-                  >
-                    {d.name} <span style={{ color: palette.sub, marginLeft: 4 }}>✕</span>
-                  </button>
-                ))}
-              </div>
+            </button>
+          ))}
+        </Card>
+      )}
 
+      {search.k === "done" && results.length === 0 && (
+        <p style={{ fontSize: 14, color: palette.sub, marginTop: 10 }}>
+          찾는 약이 없어요. 상자에 적힌 이름 그대로 넣어보세요.
+        </p>
+      )}
+
+      {/* ---------------------------------------------- 담은 약 */}
+      {picked.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: palette.ink, marginBottom: 8 }}>
+            담은 약 {picked.length}개
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {picked.map((d) => (
               <button
-                onClick={check}
-                disabled={picked.length < 2}
+                key={d.seq}
+                onClick={() => remove(d.seq)}
                 style={{
-                  width: "100%",
-                  marginTop: 16,
                   border: "none",
-                  borderRadius: 14,
-                  padding: "18px 0",
-                  fontSize: 18,
-                  fontWeight: 800,
-                  color: palette.white,
-                  background: picked.length < 2 ? "#C9C3CE" : palette.primary,
+                  borderRadius: 999,
+                  padding: "10px 14px",
+                  fontSize: 15,
+                  fontWeight: 600,
+                  color: palette.ink,
+                  background: palette.white,
+                  boxShadow: "0 1px 6px rgba(26,22,30,0.08)",
                 }}
               >
-                {picked.length < 2 ? "약을 2개 이상 담아주세요" : "같이 먹어도 되는지 확인"}
+                {d.name} <span style={{ color: palette.sub, marginLeft: 4 }}>✕</span>
               </button>
-            </div>
-          )}
+            ))}
+          </div>
 
-          {/* ------------------------------------------------- 결과 */}
-          {checked && <Result conflicts={conflicts} count={picked.length} />}
-        </>
+          <button
+            onClick={runCheck}
+            disabled={picked.length < 2 || check.k === "loading"}
+            style={{
+              width: "100%",
+              marginTop: 16,
+              border: "none",
+              borderRadius: 14,
+              padding: "18px 0",
+              fontSize: 18,
+              fontWeight: 800,
+              color: palette.white,
+              background: picked.length < 2 ? "#C9C3CE" : palette.primary,
+            }}
+          >
+            {picked.length < 2
+              ? "약을 2개 이상 담아주세요"
+              : check.k === "loading"
+                ? "확인하는 중…"
+                : "같이 먹어도 되는지 확인"}
+          </button>
+        </div>
+      )}
+
+      {/* ------------------------------------------------- 결과 */}
+      {check.k === "done" && <Result conflicts={check.conflicts} count={picked.length} />}
+      {check.k === "error" && (
+        <Note text="확인하지 못했어요. 잠시 뒤 다시 시도해주세요." />
       )}
 
       {/* 이 문구는 지우면 안 돼요. 이 앱은 판단을 대신하지 않아요. */}
@@ -202,13 +220,7 @@ export function HomeScreen() {
   );
 }
 
-function Result({
-  conflicts,
-  count,
-}: {
-  conflicts: ReturnType<typeof findConflicts>;
-  count: number;
-}) {
+function Result({ conflicts, count }: { conflicts: Conflict[]; count: number }) {
   if (conflicts.length === 0) {
     return (
       <Card style={{ marginTop: 16, borderLeft: `5px solid ${palette.ok}` }}>
@@ -217,7 +229,8 @@ function Result({
         </div>
         <p style={{ fontSize: 14, color: palette.sub, margin: "8px 0 0", lineHeight: 1.7 }}>
           담으신 약 {count}개 사이에 식약처가 병용금기로 정해 둔 조합은 없었어요.
-          다만 <b>등록되지 않은 상호작용</b>은 여전히 있을 수 있어요.
+          그렇다고 <b>함께 먹어도 안전하다는 뜻은 아니에요</b>. 아직 등록되지 않은 상호작용도 있을 수 있으니,
+          정확한 판단은 약사·의사와 상의하세요.
         </p>
       </Card>
     );

@@ -9,8 +9,6 @@
     "deploy": "ait deploy",
     "lint": "eslint .",
     "typecheck": "tsc -b --force",
-    "data": "node scripts/build-dur.mjs",
-    "probe": "node scripts/build-dur.mjs --probe",
     "check:dur": "node --experimental-strip-types scripts/check-dur.ts"
   },
   "dependencies": {
@@ -28,6 +26,7 @@
     "@types/react": "^18.0.0",
     "@types/react-dom": "^18.0.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "puppeteer-core": "^25.7.0",
     "typescript": "~5.7.2",
     "vite": "^6.2.0"
   }
