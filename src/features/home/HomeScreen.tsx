@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ImageBannerAd } from "../../components/BannerAd";
+import { CoachMarks } from "../../components/CoachMarks";
 import { Card } from "../../components/ScreenLayout";
 import { EVENT, track, trackScreen } from "../../lib/analytics";
 import { findConflicts, searchDrugs, type Conflict, type Drug } from "../../lib/dur";
@@ -35,6 +36,11 @@ export function HomeScreen() {
   const [recent, setRecent] = useState<Drug[]>(() => loadRecent());
   const [favorites, setFavorites] = useState<Drug[]>(() => loadFavorites());
   const [combos, setCombos] = useState<Combo[]>(() => loadCombos());
+
+  const searchRef = useRef<HTMLInputElement>(null);
+  // 저장한 조합·내 약·최근 담은 약 칸. localStorage에서 바로 불러오는 값이라
+  // (담은 약과 달리) 새로고침 뒤에도 코치마크가 뜨는 시점에 이미 존재해요.
+  const savedSectionRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     trackScreen("home");
@@ -122,6 +128,7 @@ export function HomeScreen() {
 
       {/* -------------------------------------------------- 검색 */}
       <input
+        ref={searchRef}
         value={q}
         onChange={(e) => setQ(e.target.value)}
         placeholder="약 이름 두 글자 이상 (예: 타이레놀)"
@@ -140,7 +147,7 @@ export function HomeScreen() {
 
       {/* -------------------------------------------- 저장한 조합 · 내 약 · 최근 담은 약 */}
       {q.trim() === "" && (combos.length > 0 || favorites.length > 0 || visibleRecent.length > 0) && (
-        <div style={{ marginTop: 14 }}>
+        <div ref={savedSectionRef} style={{ marginTop: 14 }}>
           {combos.length > 0 && (
             <div style={{ marginBottom: favorites.length > 0 || visibleRecent.length > 0 ? 16 : 0 }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: palette.sub, marginBottom: 8 }}>
@@ -394,6 +401,26 @@ export function HomeScreen() {
       <div style={{ marginTop: 24 }}>
         <ImageBannerAd />
       </div>
+
+      <CoachMarks
+        storageKey="pill-check:coach:v1"
+        steps={[
+          {
+            title: "같이 먹어도 되는지 확인해드려요",
+            body: "여러 약을 담으면, 함께 먹지 말라고 정해진 조합이 있는지 찾아드려요. 담은 약은 이 기기에만 남고 밖으로 보내지 않아요.",
+          },
+          {
+            ref: searchRef,
+            title: "드시는 약을 검색해보세요",
+            body: "약 이름을 두 글자 이상 넣어 담고, 두 개 이상 모이면 확인할 수 있어요.",
+          },
+          {
+            ref: savedSectionRef,
+            title: "저장해두면 다음에 바로 볼 수 있어요",
+            body: "자주 드시는 조합이나 즐겨찾는 약은 저장해두면, 다음엔 검색 없이 바로 담을 수 있어요.",
+          },
+        ]}
+      />
     </div>
   );
 }
