@@ -2,4 +2,6 @@ node_modules
 dist
 *.ait
 .env
-screenshots/
+# 작업하며 찍은 검증용 캡쳐는 빼고, README 에 쓰는 것만 올려요.
+screenshots/*
+!screenshots/readme-*.png
