@@ -406,13 +406,9 @@ export function HomeScreen() {
         storageKey="pill-check:coach:v1"
         steps={[
           {
-            title: "같이 먹어도 되는지 확인해드려요",
-            body: "여러 약을 담으면, 함께 먹지 말라고 정해진 조합이 있는지 찾아드려요. 담은 약은 이 기기에만 남고 밖으로 보내지 않아요.",
-          },
-          {
             ref: searchRef,
             title: "드시는 약을 검색해보세요",
-            body: "약 이름을 두 글자 이상 넣어 담고, 두 개 이상 모이면 확인할 수 있어요.",
+            body: "두 개 이상 담으면 함께 먹지 말라고 정해진 조합인지 찾아드려요. 담은 약은 이 기기에만 남고 밖으로 보내지 않아요.",
           },
           {
             ref: savedSectionRef,
