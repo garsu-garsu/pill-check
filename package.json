@@ -9,7 +9,8 @@
     "deploy": "ait deploy",
     "lint": "eslint .",
     "typecheck": "tsc -b --force",
-    "check:dur": "node --experimental-strip-types scripts/check-dur.ts"
+    "check:dur": "node --experimental-strip-types scripts/check-dur.ts",
+    "check:growth": "node --experimental-strip-types scripts/check-growth.ts"
   },
   "dependencies": {
     "@apps-in-toss/web-framework": "^3.0.2",

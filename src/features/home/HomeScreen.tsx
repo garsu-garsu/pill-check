@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 
-import { ImageBannerAd } from "../../components/BannerAd";
 import { CoachMarks } from "../../components/CoachMarks";
 import { Card } from "../../components/ScreenLayout";
+import { useAdGate } from "../../hooks/useAdGate";
 import { EVENT, track, trackScreen } from "../../lib/analytics";
+import { noteGoodExperience } from "../../lib/review";
+import { shareApp } from "../../lib/share";
 import { findConflicts, searchDrugs, type Conflict, type Drug } from "../../lib/dur";
 import {
   addRecent,
@@ -20,8 +22,15 @@ import {
 } from "../../lib/pillbox";
 import { palette } from "../../theme";
 
+// 스크롤해야 보이는 화면 맨 아래 배너라 첫 화면 번들에는 안 넣어요.
+const ImageBannerAd = lazy(() =>
+  import("../../components/BannerAd").then((m) => ({ default: m.ImageBannerAd })),
+);
+
 /** 한 번에 담을 수 있는 약. 이보다 많으면 약사와 상담할 일이에요. */
 const MAX = 10;
+/** 이 개수까지는 무료로 조합을 저장해요. 그 다음부터는 광고를 봐야 해요. */
+const FREE_COMBO_SLOTS = 3;
 /** 입력할 때마다 API를 부르면 너무 잦으니, 타이핑이 멈추고 이만큼 지나면 검색해요. */
 const SEARCH_DEBOUNCE_MS = 400;
 
@@ -36,6 +45,7 @@ export function HomeScreen() {
   const [recent, setRecent] = useState<Drug[]>(() => loadRecent());
   const [favorites, setFavorites] = useState<Drug[]>(() => loadFavorites());
   const [combos, setCombos] = useState<Combo[]>(() => loadCombos());
+  const adGate = useAdGate();
 
   const searchRef = useRef<HTMLInputElement>(null);
   // 저장한 조합·내 약·최근 담은 약 칸. localStorage에서 바로 불러오는 값이라
@@ -97,6 +107,15 @@ export function HomeScreen() {
     setCheck({ k: "idle" });
   };
 
+  const needsAdToSave = combos.length >= FREE_COMBO_SLOTS;
+  const saveCurrentCombo = () => {
+    if (needsAdToSave) {
+      adGate.watchThen(() => setCombos((prev) => saveCombo(prev, picked)), "save_combo");
+    } else {
+      setCombos(saveCombo(combos, picked));
+    }
+  };
+
   const runCheck = () => {
     setCheck({ k: "loading" });
     findConflicts(picked)
@@ -104,6 +123,9 @@ export function HomeScreen() {
         setCheck({ k: "done", conflicts: found });
         track(EVENT.checked, { count: picked.length });
         if (found.length > 0) track(EVENT.conflictFound, { count: found.length });
+        // 확인을 끝낸 것이 이 앱에서의 좋은 경험이에요. 결과가 화면에 그려진
+        // 뒤에 물어봐요 — 결과보다 리뷰 창이 먼저 뜨면 안 됩니다.
+        setTimeout(noteGoodExperience, 1200);
       })
       .catch(() => setCheck({ k: "error" }));
   };
@@ -337,7 +359,7 @@ export function HomeScreen() {
 
           {picked.length >= 2 && (
             <button
-              onClick={() => setCombos(saveCombo(combos, picked))}
+              onClick={saveCurrentCombo}
               disabled={currentCombo != null}
               style={{
                 width: "100%",
@@ -352,7 +374,11 @@ export function HomeScreen() {
                 background: "transparent",
               }}
             >
-              {currentCombo != null ? "저장됨" : "이 조합 저장"}
+              {currentCombo != null
+                ? "저장됨"
+                : needsAdToSave
+                  ? "광고 보고 저장"
+                  : "이 조합 저장"}
             </button>
           )}
 
@@ -398,8 +424,29 @@ export function HomeScreen() {
         </p>
       </Card>
 
+      {/* 부모님께 보내드릴 수 있게. 담은 약이나 확인 결과는 절대 담지 않아요. */}
+      <button
+        type="button"
+        onClick={() => void shareApp()}
+        style={{
+          width: "100%",
+          marginTop: 12,
+          border: `1px solid ${palette.line}`,
+          borderRadius: 12,
+          padding: "14px 0",
+          fontSize: 15,
+          fontWeight: 700,
+          color: palette.primary,
+          background: "transparent",
+        }}
+      >
+        이 앱 알려주기
+      </button>
+
       <div style={{ marginTop: 24 }}>
-        <ImageBannerAd />
+        <Suspense fallback={null}>
+          <ImageBannerAd />
+        </Suspense>
       </div>
 
       <CoachMarks

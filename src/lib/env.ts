@@ -1,6 +1,8 @@
 export const AD_GROUP_ID_BANNER = import.meta.env?.VITE_AD_GROUP_ID_BANNER ?? "";
 export const AD_GROUP_ID_BANNER_IMAGE =
   import.meta.env?.VITE_AD_GROUP_ID_BANNER_IMAGE ?? "";
+export const AD_GROUP_ID_REWARDED =
+  import.meta.env?.VITE_AD_GROUP_ID_REWARDED ?? "";
 
 /**
  * 공공데이터포털 인증키. 앱이 브라우저(런타임)에서 식약처 API를 직접 부르기 때문에
